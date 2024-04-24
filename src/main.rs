@@ -8,7 +8,7 @@ use serde_with::{serde_as, DurationSeconds};
 use std::{
     io::{BufWriter, Read, Seek, Write},
     net::TcpListener,
-    sync::atomic::AtomicBool,
+    sync::{atomic::AtomicBool, Arc},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -71,7 +71,7 @@ fn main() {
     });
     let socket = TcpListener::bind(format!("0.0.0.0:{}", port)).expect("could not bind to socket");
 
-    let thread_running: AtomicBool = AtomicBool::new(false);
+    let thread_running = Arc::new(AtomicBool::new(false));
     let mut thread_handle: Option<JoinHandle<()>> = None;
     let mut start_time: Option<Instant> = None;
     let mut end_time: Option<Instant> = None;
@@ -112,13 +112,12 @@ fn main() {
                 }
             };
             // find which request was made and respond accordingly
-            let state = unsafe {
-                if let Some(handle) = &thread_handle {
+            let state =  if let Some(handle) = &thread_handle {
                     !handle.is_finished()
                 } else {
                     false
-                }
-            };
+                };
+
             let request = match request {
                 Request::LogRequest(request) => {
                     if state {
@@ -136,28 +135,24 @@ fn main() {
                     request
                 }
                 Request::CancelLog => {
-                    state.store(false, std::sync::atomic::Ordering::Relaxed);
-                    unsafe {
-                        if thread_handle.is_some() {
-                            _ = thread_handle.take().unwrap().join();
-                        }
+                    thread_running.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if thread_handle.is_some() {
+                        _ = thread_handle.take().unwrap().join();
                     }
                     continue; // stop the logging
                 }
                 Request::StatusRequest => {
-                    let logstatus = unsafe {
-                        if end_time.is_some() {
-                            LogStatus {
-                                logging: state,
-                                time_passed: Instant::now().duration_since(start_time.unwrap()),
-                                time_left: end_time.unwrap().duration_since(Instant::now()),
-                            }
-                        } else {
-                            LogStatus {
-                                logging: state,
-                                time_passed: Duration::from_secs(0),
-                                time_left: Duration::from_secs(0),
-                            }
+                    let logstatus = if end_time.is_some() {
+                        LogStatus {
+                            logging: state,
+                            time_passed: Instant::now().duration_since(start_time.unwrap()),
+                            time_left: end_time.unwrap().duration_since(Instant::now()),
+                        }
+                    } else {
+                        LogStatus {
+                            logging: state,
+                            time_passed: Duration::from_secs(0),
+                            time_left: Duration::from_secs(0),
                         }
                     };
                     match &stream.write(serde_json::to_string(&logstatus).unwrap().as_bytes()) {
@@ -292,7 +287,7 @@ fn main() {
                         4 | 5 | 8 => Vec::from_iter([0u8; 4]),
                         6 | 7 | 9 => Vec::from_iter([0u8; 8]),
                         _ => {
-                            state.store(false, std::sync::atomic::Ordering::Relaxed);
+                            thread_running.store(false, std::sync::atomic::Ordering::Relaxed);
                             panic!("incorrect datatype in file");
                         }
                     },
@@ -322,20 +317,18 @@ fn main() {
                 .unwrap()
                 .as_bytes(),
             );
+            let thread_running = thread_running.clone();
             let handle = std::thread::spawn(move || {
-                state.store(true, std::sync::atomic::Ordering::Relaxed);
+                thread_running.store(true, std::sync::atomic::Ordering::Relaxed);
                 let interval = Duration::from_millis(request.sampletime as u64);
                 let log_duration = Duration::from_secs(request.duration);
                 let start = Instant::now();
                 let mut next_time = start.clone();
-                unsafe {
-                    start_time = Some(start.clone());
-                    end_time = Some(start + log_duration);
-                }
-
+                start_time = Some(start.clone());
+                end_time = Some(start + log_duration);
                 let mut time = 0;
                 while next_time.duration_since(start) < log_duration
-                    && state.load(std::sync::atomic::Ordering::Relaxed)
+                    && thread_running.load(std::sync::atomic::Ordering::Relaxed)
                 {
                     thread::sleep_until(next_time); // thread timer
                     _ = write!(writer, "{},", time);
@@ -346,7 +339,7 @@ fn main() {
                             .io
                             .read_exact(&mut signal.buffer.as_mut_slice())
                             .map_err(|_| {
-                                state.store(false, std::sync::atomic::Ordering::Relaxed);
+                                thread_running.store(false, std::sync::atomic::Ordering::Relaxed);
                                 panic!("Could not read from process_vm")
                             })
                             .unwrap();
@@ -402,7 +395,7 @@ fn main() {
                             ),
                             10 => write!(writer, "{}", signal.buffer[0]),
                             _ => {
-                                state.store(false, std::sync::atomic::Ordering::Relaxed);
+                                thread_running.store(false, std::sync::atomic::Ordering::Relaxed);
                                 panic!("Unknown datatype");
                             }
                         };
@@ -414,7 +407,7 @@ fn main() {
                 }
                 println!("log finished");
             });
-            unsafe { thread_handle = Some(handle) };
+            thread_handle = Some(handle);
         }
     }
 }
