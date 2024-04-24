@@ -13,10 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-static STATE: AtomicBool = AtomicBool::new(false);
-static mut THREAD: Option<JoinHandle<()>> = None;
-static mut START: Option<Instant> = None;
-static mut END: Option<Instant> = None;
+
 
 #[serde_as]
 #[derive(Serialize)]
@@ -73,6 +70,12 @@ fn main() {
         "50000".to_string()
     });
     let socket = TcpListener::bind(format!("0.0.0.0:{}", port)).expect("could not bind to socket");
+
+    let thread_running: AtomicBool = AtomicBool::new(false);
+    let mut thread_handle: Option<JoinHandle<()>> = None;
+    let mut start_time: Option<Instant> = None;
+    let mut end_time: Option<Instant> = None;
+
     'accept: loop {
         println!("listening on 0.0.0.0:{}", port);
         let (mut stream, addr) = socket.accept().unwrap();
@@ -110,7 +113,7 @@ fn main() {
             };
             // find which request was made and respond accordingly
             let state = unsafe {
-                if let Some(handle) = &THREAD {
+                if let Some(handle) = &thread_handle {
                     !handle.is_finished()
                 } else {
                     false
@@ -133,21 +136,21 @@ fn main() {
                     request
                 }
                 Request::CancelLog => {
-                    STATE.store(false, std::sync::atomic::Ordering::Relaxed);
+                    state.store(false, std::sync::atomic::Ordering::Relaxed);
                     unsafe {
-                        if THREAD.is_some() {
-                            _ = THREAD.take().unwrap().join();
+                        if thread_handle.is_some() {
+                            _ = thread_handle.take().unwrap().join();
                         }
                     }
                     continue; // stop the logging
                 }
                 Request::StatusRequest => {
                     let logstatus = unsafe {
-                        if END.is_some() {
+                        if end_time.is_some() {
                             LogStatus {
                                 logging: state,
-                                time_passed: Instant::now().duration_since(START.unwrap()),
-                                time_left: END.unwrap().duration_since(Instant::now()),
+                                time_passed: Instant::now().duration_since(start_time.unwrap()),
+                                time_left: end_time.unwrap().duration_since(Instant::now()),
                             }
                         } else {
                             LogStatus {
@@ -289,7 +292,7 @@ fn main() {
                         4 | 5 | 8 => Vec::from_iter([0u8; 4]),
                         6 | 7 | 9 => Vec::from_iter([0u8; 8]),
                         _ => {
-                            STATE.store(false, std::sync::atomic::Ordering::Relaxed);
+                            state.store(false, std::sync::atomic::Ordering::Relaxed);
                             panic!("incorrect datatype in file");
                         }
                     },
@@ -320,19 +323,19 @@ fn main() {
                 .as_bytes(),
             );
             let handle = std::thread::spawn(move || {
-                STATE.store(true, std::sync::atomic::Ordering::Relaxed);
+                state.store(true, std::sync::atomic::Ordering::Relaxed);
                 let interval = Duration::from_millis(request.sampletime as u64);
                 let log_duration = Duration::from_secs(request.duration);
                 let start = Instant::now();
                 let mut next_time = start.clone();
                 unsafe {
-                    START = Some(start.clone());
-                    END = Some(start + log_duration);
+                    start_time = Some(start.clone());
+                    end_time = Some(start + log_duration);
                 }
 
                 let mut time = 0;
                 while next_time.duration_since(start) < log_duration
-                    && STATE.load(std::sync::atomic::Ordering::Relaxed)
+                    && state.load(std::sync::atomic::Ordering::Relaxed)
                 {
                     thread::sleep_until(next_time); // thread timer
                     _ = write!(writer, "{},", time);
@@ -343,13 +346,13 @@ fn main() {
                             .io
                             .read_exact(&mut signal.buffer.as_mut_slice())
                             .map_err(|_| {
-                                STATE.store(false, std::sync::atomic::Ordering::Relaxed);
+                                state.store(false, std::sync::atomic::Ordering::Relaxed);
                                 panic!("Could not read from process_vm")
                             })
                             .unwrap();
                         _ = signal
                             .io
-                            .seek(std::io::SeekFrom::Start(signal.address as u64)); // because it io is represented as a stream we need to seek back to the proper address :(
+                            .seek(std::io::SeekFrom::Start(signal.address as u64)); // because it is represented as a stream we need to seek back to the proper address :(
                         _ = match signal.datatype {
                             0 => write!(writer, "{}", signal.buffer[0]),
                             1 => write!(
@@ -399,7 +402,7 @@ fn main() {
                             ),
                             10 => write!(writer, "{}", signal.buffer[0]),
                             _ => {
-                                STATE.store(false, std::sync::atomic::Ordering::Relaxed);
+                                state.store(false, std::sync::atomic::Ordering::Relaxed);
                                 panic!("Unknown datatype");
                             }
                         };
@@ -411,7 +414,7 @@ fn main() {
                 }
                 println!("log finished");
             });
-            unsafe { THREAD = Some(handle) };
+            unsafe { thread_handle = Some(handle) };
         }
     }
 }
