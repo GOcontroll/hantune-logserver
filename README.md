@@ -3,7 +3,7 @@ install necessary toolchains:
 install [rustup](https://www.rust-lang.org/learn/get-started) or use your package manager (preferred)  
 `rustup toolchain install nightly` (this project uses the nightly toolchain as one unstable feature is used)  
 `rustup target add aarch64-unknown-linux-gnu` (add the right target of the rustc compiler)  
-`cargo install cargo-zigbuild` (tool to link using the zig compiler, requires the zig compiler to be installed)  
+`cargo install cargo-zigbuild` [or download a prebuild binary, recommended if you dont have a compile set up yet, pip can also be used](https://github.com/rust-cross/cargo-zigbuild) (tool to link using the zig compiler, requires the zig compiler to be installed)  
 Install [zig](https://ziglang.org/learn/getting-started/) allows for linking any glibc version that is desired and means you dont have to set up link arguments to build.  
 get targets glibc version (`ldd --version`)
 
