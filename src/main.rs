@@ -139,10 +139,11 @@ fn main() {
                     if thread_handle.is_some() {
                         _ = thread_handle.take().unwrap().join();
                     }
-                    continue; // stop the logging
+					_=stream.shutdown(std::net::Shutdown::Both);
+                    continue 'accept; // stop the logging
                 }
                 Request::StatusRequest => {
-                    let logstatus = if end_time.is_some() {
+                    let logstatus = if end_time.is_some() && state {
                         LogStatus {
                             logging: state,
                             time_passed: Instant::now().duration_since(start_time.unwrap()),
@@ -318,14 +319,15 @@ fn main() {
                 .as_bytes(),
             );
             let thread_running = thread_running.clone();
+			let interval = Duration::from_millis(request.sampletime as u64);
+			let log_duration = Duration::from_secs(request.duration);
+			let start = Instant::now();
+			let mut next_time = start.clone();
+			start_time = Some(start.clone());
+			end_time = Some(start + log_duration);
             let handle = std::thread::spawn(move || {
                 thread_running.store(true, std::sync::atomic::Ordering::Relaxed);
-                let interval = Duration::from_millis(request.sampletime as u64);
-                let log_duration = Duration::from_secs(request.duration);
-                let start = Instant::now();
-                let mut next_time = start.clone();
-                start_time = Some(start.clone());
-                end_time = Some(start + log_duration);
+                
                 let mut time = 0;
                 while next_time.duration_since(start) < log_duration
                     && thread_running.load(std::sync::atomic::Ordering::Relaxed)
